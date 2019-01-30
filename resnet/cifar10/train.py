@@ -20,7 +20,7 @@ from resnet.cifar10.datasets import CoarseCIFAR100
 
 DATASETS = [
     'cifar10', 'cifar100', 'cifar20',
-    'svhn', 'svhn+extra',
+    'svhn', 'svhn+extra', 'mnist',
 ]
 
 # Here for legacy reasons
@@ -33,7 +33,8 @@ MEANS = {
     'cifar100': (0.5071, 0.4866, 0.4409),
     'cifar20': (0.5071, 0.4866, 0.4409),  # Same as CIFAR100
     'svhn': (0.4377, 0.4438, 0.4728),
-    'svhn+extra': (0.4309, 0.4302, 0.4463)
+    'svhn+extra': (0.4309, 0.4302, 0.4463),
+    'mnist': (0.1306)
 }
 
 STDS = {
@@ -44,7 +45,8 @@ STDS = {
 
     # From resnet.tools:meanstd
     'svhn': (0.1201, 0.1231, 0.1052),
-    'svhn+extra': (0.1252, 0.1282, 0.1147)
+    'svhn+extra': (0.1252, 0.1282, 0.1147),
+    'mnist': (0.3015)
 }
 
 # From resnet.tools:meanstd
@@ -52,7 +54,8 @@ MEANSTDS = {
     'cifar10': (0.2023, 0.1994, 0.2010),
     'cifar100': (0.2009, 0.1984, 0.2023),
     'svhn': (0.1201, 0.1231, 0.1052),
-    'svhn+extra': (0.1252, 0.1282, 0.1147)
+    'svhn+extra': (0.1252, 0.1282, 0.1147),
+    'mnist': (0.3015)
 }
 
 MODELS = {
@@ -265,6 +268,11 @@ def create_test_dataset(dataset, dataset_dir, transform,
                                      download=True,
                                      transform=transform,
                                      target_transform=target_transform)
+    elif dataset == 'mnist':
+        test_dataset = datasets.MNIST(root=dataset_dir, train=False,
+                                      download=True,
+                                      transform=transform,
+                                      target_transform=target_transform)
     return test_dataset
 
 
@@ -302,6 +310,11 @@ def create_train_dataset(dataset, dataset_dir, transform,
             _train_dataset,
             _extra_dataset
         ])
+    elif dataset == 'mnist':
+        train_dataset = datasets.MNIST(root=dataset_dir, train=True,
+                                       download=True,
+                                       transform=transform,
+                                       target_transform=target_transform)
 
     return train_dataset
 
@@ -413,7 +426,7 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
     print("Preparing {} data:".format(dataset.upper()))
     transform_test = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(MEANS[dataset], STDS[dataset]),
+        transforms.Normalize(MEANS[dataset], STDS[dataset])
     ])
 
     test_dataset = create_test_dataset(dataset, dataset_dir, transform_test)

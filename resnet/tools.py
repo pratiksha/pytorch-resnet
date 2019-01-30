@@ -19,6 +19,9 @@ def cli():
 def normalize(dataset, dataset_dir):
     if dataset == 'svhn+extra':
         dataset_dir = os.path.join(dataset_dir, 'svhn')
+    elif dataset == 'mnist':
+        print('MNIST returns ByteTensor, which does not implement mean and std. Use meanstd.')
+        return
     else:
         dataset_dir = os.path.join(dataset_dir, dataset)
 
@@ -52,6 +55,20 @@ def meanstd(dataset, dataset_dir):
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=1, num_workers=1, pin_memory=False)
 
+    if dataset == 'mnist':
+        ''' single channel '''
+        mean = 0.0
+        std = 0.0
+        print('==> Computing mean and std..')
+        for inputs, targets in tqdm.tqdm(train_loader):
+            mean += inputs[:, 0, :, :].mean()
+            std += inputs[:, 0, :, :].std()
+        mean /= (len(train_dataset))
+        std /= (len(train_dataset))
+        print("Mean: {}".format(mean))
+        print("Std: {}".format(std))
+        return
+        
     mean = torch.zeros(3)
     std = torch.zeros(3)
     print('==> Computing mean and std..')

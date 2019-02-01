@@ -16,7 +16,7 @@ from torchvision import datasets
 from resnet import utils
 from resnet.cifar10.models import resnet, densenet
 from resnet.cifar10.datasets import CoarseCIFAR100
-
+from resnet.cifar10 import subsample_transform
 
 DATASETS = [
     'cifar10', 'cifar100', 'cifar20',
@@ -34,7 +34,7 @@ MEANS = {
     'cifar20': (0.5071, 0.4866, 0.4409),  # Same as CIFAR100
     'svhn': (0.4377, 0.4438, 0.4728),
     'svhn+extra': (0.4309, 0.4302, 0.4463),
-    'mnist': (0.1306)
+    'mnist': (0.1306,)
 }
 
 STDS = {
@@ -46,7 +46,7 @@ STDS = {
     # From resnet.tools:meanstd
     'svhn': (0.1201, 0.1231, 0.1052),
     'svhn+extra': (0.1252, 0.1282, 0.1147),
-    'mnist': (0.3015)
+    'mnist': (0.3015,)
 }
 
 # From resnet.tools:meanstd
@@ -55,7 +55,13 @@ MEANSTDS = {
     'cifar100': (0.2009, 0.1984, 0.2023),
     'svhn': (0.1201, 0.1231, 0.1052),
     'svhn+extra': (0.1252, 0.1282, 0.1147),
-    'mnist': (0.3015)
+    'mnist': (0.3015,)
+}
+
+# For creating mask transforms
+SHAPES = {
+    'cifar10': (3, 32, 32),
+#   'mnist': (1, 32, 32), # Torch version of mnist is 32x32 for some reason - padding?
 }
 
 MODELS = {
@@ -422,11 +428,16 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
             print('Half precision (16-bit floating point) only works on GPU')
     print(f"using {num_workers} workers for data loading")
 
+    # create mask transform
+    data_shape = SHAPES[dataset]
+    mask_tr = subsample_transform.Subsample(2)
+    
     # load data
     print("Preparing {} data:".format(dataset.upper()))
     transform_test = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(MEANS[dataset], STDS[dataset])
+        transforms.Normalize(MEANS[dataset], STDS[dataset]),
+        mask_tr,
     ])
 
     test_dataset = create_test_dataset(dataset, dataset_dir, transform_test)
@@ -453,6 +464,7 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
     transform_train = transforms.Compose(transform_train + [
         transforms.ToTensor(),
         transforms.Normalize(MEANS[dataset], STDS[dataset]),
+        mask_tr,
     ])
 
     train_dataset = create_train_dataset(dataset, dataset_dir, transform_train)

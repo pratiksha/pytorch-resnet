@@ -12,7 +12,8 @@ setup(
             'cifar10 = resnet.cifar10.__main__:cli',
             'cifar100 = resnet.cifar100.__main__:cli',
             'svhn = resnet.svhn.__main__:cli',
-            'imagenet = resnet.imagenet.__main__:cli'
+            'imagenet = resnet.imagenet.__main__:cli',
+            'mnist = resnet.mnist.__main__:cli',
         ]
     },
     install_requires=[

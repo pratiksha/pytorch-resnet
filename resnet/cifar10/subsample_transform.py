@@ -40,9 +40,17 @@ class Subsample(object):
     Invariants: square image remains square after sampling.
     """
     
-    def __init__(self, stride):
+    def __init__(self, stride, index):
+        # index is 0 <= i < stride**2 that selects which element of the
+        #   stride x stride square is retained in the final image.
+
         assert(isinstance(stride, int))
+        assert(isinstance(index, int))
+        assert(index < stride**2)
+        
         self.stride = stride
+        self.row = (index // self.stride)
+        self.col = index - (self.row)*self.stride
     
     def __call__(self, image):
         # image is channels x h x w
@@ -58,6 +66,6 @@ class Subsample(object):
                                       (int)(image.shape[-2] / self.stride))))
         for i in range(downsampled_img.shape[-1]):
             for j in range(downsampled_img.shape[-2]):
-                downsampled_img[:, i, j] = image[:, i*self.stride, j*self.stride]
+                downsampled_img[:, i, j] = image[:, i*self.stride + self.row, j*self.stride + self.col]
         
         return downsampled_img

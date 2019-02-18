@@ -18,15 +18,24 @@ from torchvision import transforms
 from torchvision import datasets
 
 from resnet import utils
-from resnet.cifar10.models import resnet, densenet
+from resnet.cifar10.models import resnet, densenet, resnet_single_channel
 from resnet.cifar10.datasets import CoarseCIFAR100
 from resnet.cifar10 import subsample_transform
 
 from resnet.cifar10.train import DATASETS, MEANS, STDS, MEANSTDS, SHAPES, MODELS, correct
 from resnet.cifar10.ensemble_dataset import EnsembleDataset
 
-def run(epoch, model_infos, loader, criterion=None, top=(1, 5),
-        use_cuda=False, tracking=None, train=True, half=False):
+def to_one_hot(arr, n):
+    onehot = torch.zeros(arr.shape[0], n)
+    for row in range(onehot.shape[0]):
+        onehot[row][arr[row]] = 1
+    return onehot.byte()
+
+def ensemble_correct(votes, targets):
+    return (int)(votes.eq(targets.data.cpu()).int().sum(0))
+
+def run(epoch, model_infos, loader, criterion=None, top=(1,), ## note we currently only support top-1 accuracy for majority vote
+    use_cuda=False, tracking=None, train=True, half=False):
     accuracies = [utils.AverageMeter() for _ in top]
 
     assert criterion is not None or not train, 'Need criterion to train model'
@@ -69,16 +78,16 @@ def run(epoch, model_infos, loader, criterion=None, top=(1, 5),
                 losses.update(loss.data[0], batch_size)
 
         ## here is where the majority vote goes
-        acc_outputs = all_outputs[0]
-        for x in all_outputs[1:]:
-            acc_outputs = torch.add(acc_outputs, 1, x) # for now just add all the output vectors together and take max as "majority"
-        # re-normalize
-        acc_outputs = acc_outputs.div_(len(all_outputs))
-            
-        _, predictions = torch.max(acc_outputs.data, 1)
-        top_correct = correct(acc_outputs, all_targets[0], top=top) ## again, all targets should be the same
-        for i, count in enumerate(top_correct):
-            accuracies[i].update(count * (100. / batch_size), batch_size)
+        votes = torch.zeros(all_outputs[0].shape)
+        n_classes = all_outputs[0].shape[1]
+        for x in all_outputs:
+            _, predictions = torch.max(x.data, 1)
+            pred_idxs = to_one_hot(predictions, n_classes)
+            votes[pred_idxs] += 1
+        _, final_predictions = torch.max(votes, 1)
+
+        votes_correct = ensemble_correct(final_predictions, all_targets[0])
+        accuracies[0].update(votes_correct * (100. / batch_size), batch_size)
 
         end = datetime.now()
         if tracking is not None:
@@ -89,7 +98,7 @@ def run(epoch, model_infos, loader, criterion=None, top=(1, 5),
             result['batch'] = batch_index
             result['batch_size'] = batch_size
             for i, k in enumerate(top):
-                result['top{}_correct'.format(k)] = top_correct[i]
+                result['top{}_correct'.format(k)] = votes_correct
                 result['top{}_accuracy'.format(k)] = accuracies[i].val
             if train:
                 result['loss'] = loss.data[0]
@@ -335,6 +344,10 @@ def train_ensemble(ctx, dataset_dir, checkpoint, restore, tracking, track_test_a
     else:
         dataset_dir = os.path.join(dataset_dir, dataset)
 
+    ### Use single-channel ResNet for MNIST, default is 3-channel ###
+    if dataset == 'mnist' and 'resnet' in arch:
+        arch += '-1'
+        
     if dataset == 'cifar100':
         num_classes = 100
     elif dataset == 'cifar20':

@@ -11,7 +11,7 @@ from torchvision import transforms
 from torchvision import datasets
 
 from resnet.utils import save_result
-from resnet.cifar10.train import MEAN, STD, MODELS
+from resnet.cifar10.all_models import MEAN, STD, MODELS
 
 
 class PyTorchEngine:

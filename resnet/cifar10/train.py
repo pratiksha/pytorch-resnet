@@ -13,317 +13,12 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torchvision import transforms
 from torchvision import datasets
 
-from resnet import utils
-from resnet.cifar10.models import resnet, densenet
+from resnet import utils, file_utils, data
+from resnet.cifar10.models import resnet, densenet, resnet_single_channel
 from resnet.cifar10.datasets import CoarseCIFAR100
-from resnet.cifar10 import subsample_transform
+from resnet.cifar10.all_models import MODELS
 
-DATASETS = [
-    'cifar10', 'cifar100', 'cifar20',
-    'svhn', 'svhn+extra', 'mnist',
-]
-
-# Here for legacy reasons
-MEAN = (0.4914, 0.4822, 0.4465)
-STD = (0.2023, 0.1994, 0.2010)
-
-# From resnet.tools:normalize or resnet.tools:meanstd
-MEANS = {
-    'cifar10': (0.4914, 0.4822, 0.4465),
-    'cifar100': (0.5071, 0.4866, 0.4409),
-    'cifar20': (0.5071, 0.4866, 0.4409),  # Same as CIFAR100
-    'svhn': (0.4377, 0.4438, 0.4728),
-    'svhn+extra': (0.4309, 0.4302, 0.4463),
-    'mnist': (0.1306,)
-}
-
-STDS = {
-    # From resnet.tools:normalize
-    'cifar10': (0.24703223, 0.24348512, 0.26158784),
-    'cifar100': (0.26733428, 0.25643846, 0.27615047),
-    'cifar20': (0.26733428, 0.25643846, 0.27615047),  # Same as CIFAR100
-
-    # From resnet.tools:meanstd
-    'svhn': (0.1201, 0.1231, 0.1052),
-    'svhn+extra': (0.1252, 0.1282, 0.1147),
-    'mnist': (0.3015,)
-}
-
-# From resnet.tools:meanstd
-MEANSTDS = {
-    'cifar10': (0.2023, 0.1994, 0.2010),
-    'cifar100': (0.2009, 0.1984, 0.2023),
-    'svhn': (0.1201, 0.1231, 0.1052),
-    'svhn+extra': (0.1252, 0.1282, 0.1147),
-    'mnist': (0.3015,)
-}
-
-# For creating mask transforms
-SHAPES = {
-    'cifar10': (3, 32, 32),
-#   'mnist': (1, 32, 32), # Torch version of mnist is 32x32 for some reason - padding?
-}
-
-MODELS = {
-        # "Deep Residual Learning for Image Recognition"
-        'resnet20': resnet.ResNet20,
-        'resnet32': resnet.ResNet32,
-        'resnet44': resnet.ResNet44,
-        'resnet56': resnet.ResNet56,
-        'resnet110': resnet.ResNet110,
-        'resnet1202': resnet.ResNet1202,
-
-        # "Wide Residual Networks"
-        'wrn-40-4': resnet.WRN_40_4,
-        'wrn-16-4': resnet.WRN_16_4,
-        'wrn-16-8': resnet.WRN_16_8,
-        'wrn-28-10': resnet.WRN_28_10,
-
-        # Based on "Identity Mappings in Deep Residual Networks"
-        'preact8': resnet.PreActResNet8,
-        'preact14': resnet.PreActResNet14,
-        'preact20': resnet.PreActResNet20,
-        'preact56': resnet.PreActResNet56,
-        'preact164-basic': resnet.PreActResNet164Basic,
-
-        # "Identity Mappings in Deep Residual Networks"
-        'preact110': resnet.PreActResNet110,
-        'preact164': resnet.PreActResNet164,
-        'preact1001': resnet.PreActResNet1001,
-
-        # Based on "Deep Networks with Stochastic Depth"
-        'stochastic56': resnet.StochasticResNet56,
-        'stochastic56-08': resnet.StochasticResNet56_08,
-        'stochastic110': resnet.StochasticResNet110,
-        'stochastic1202': resnet.StochasticResNet1202,
-        'stochastic152-svhn': resnet.StochasticResNet152SVHN,
-        'resnet152-svhn': resnet.ResNet152SVHN,
-
-        # "Aggregated Residual Transformations for Deep Neural Networks"
-        'resnext29-8-64': lambda num_classes=10: resnet.ResNeXt29(8, 64, num_classes=num_classes),  # noqa: E501
-        'resnext29-16-64': lambda num_classes=10: resnet.ResNeXt29(16, 64, num_classes=num_classes),  # noqa: E501
-
-        # "Densely Connected Convolutional Networks"
-        'densenetbc100': densenet.DenseNetBC100,
-        'densenetbc250': densenet.DenseNetBC250,
-        'densenetbc190': densenet.DenseNetBC190,
-
-        # Kuangliu/pytorch-cifar
-        'resnet18': resnet.ResNet18,
-        'resnet50': resnet.ResNet50,
-        'resnet101': resnet.ResNet101,
-        'resnet152': resnet.ResNet152,
-}
-
-
-def correct(outputs, targets, top=(1, )):
-    _, predictions = outputs.topk(max(top), dim=1, largest=True, sorted=True)
-    targets = targets.view(-1, 1).expand_as(predictions)
-
-    corrects = predictions.eq(targets).cpu().int().cumsum(1).sum(0)
-    tops = list(map(lambda k: corrects.data[k - 1], top))
-    return tops
-
-
-def run(epoch, model, loader, criterion=None, optimizer=None, top=(1, 5),
-        use_cuda=False, tracking=None, train=True, half=False):
-    accuracies = [utils.AverageMeter() for _ in top]
-
-    assert criterion is not None or not train, 'Need criterion to train model'
-    assert optimizer is not None or not train, 'Need optimizer to train model'
-    loader = tqdm.tqdm(loader)
-    if train:
-        model.train()
-        losses = utils.AverageMeter()
-    else:
-        model.eval()
-
-    start = datetime.now()
-    for batch_index, (inputs, targets) in enumerate(loader):
-        inputs = Variable(inputs, requires_grad=False, volatile=not train)
-        targets = Variable(targets, requires_grad=False, volatile=not train)
-        batch_size = targets.size(0)
-        assert batch_size < 2**32, 'Size is too large! correct will overflow'
-
-        if use_cuda:
-            inputs = inputs.cuda()
-            targets = targets.cuda()
-            if half:
-                inputs = inputs.half()
-
-        outputs = model(inputs)
-
-        if train:
-            loss = criterion(outputs, targets)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            losses.update(loss.data[0], batch_size)
-
-        _, predictions = torch.max(outputs.data, 1)
-        top_correct = correct(outputs, targets, top=top)
-        for i, count in enumerate(top_correct):
-            accuracies[i].update(count * (100. / batch_size), batch_size)
-
-        end = datetime.now()
-        if tracking is not None:
-            result = OrderedDict()
-            result['timestamp'] = datetime.now()
-            result['batch_duration'] = end - start
-            result['epoch'] = epoch
-            result['batch'] = batch_index
-            result['batch_size'] = batch_size
-            for i, k in enumerate(top):
-                result['top{}_correct'.format(k)] = top_correct[i]
-                result['top{}_accuracy'.format(k)] = accuracies[i].val
-            if train:
-                result['loss'] = loss.data[0]
-            utils.save_result(result, tracking)
-
-        desc = 'Epoch {} {}'.format(epoch, '(Train):' if train else '(Val):  ')
-        if train:
-            desc += ' Loss {loss.val:.4f} ({loss.avg:.4f})'.format(loss=losses)
-        for k, acc in zip(top, accuracies):
-            desc += ' Prec@{} {acc.val:.3f} ({acc.avg:.3f})'.format(k, acc=acc)
-        loader.set_description(desc)
-        start = datetime.now()
-
-    if train:
-        message = 'Training accuracy of'
-    else:
-        message = 'Validation accuracy of'
-    for i, k in enumerate(top):
-        message += ' top-{}: {}'.format(k, accuracies[i].avg)
-    print(message)
-    return accuracies[0].avg
-
-
-def create_graph(arch, timestamp, optimizer, restore,
-                 learning_rate=None,
-                 momentum=None,
-                 weight_decay=None, num_classes=10):
-    # create model
-    model = MODELS[arch](num_classes=num_classes)
-
-    # create optimizer
-    if optimizer == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    elif optimizer == 'sgd':
-        optimizer = optim.SGD(model.parameters(), lr=learning_rate,
-                              momentum=momentum,
-                              weight_decay=weight_decay)
-    else:
-        raise NotImplementedError("Unknown optimizer: {}".format(optimizer))
-
-    if restore is not None:
-        if restore == 'latest':
-            restore = utils.latest_file(arch)
-        print(f'Restoring model from {restore}')
-        assert os.path.exists(restore)
-        restored_state = torch.load(restore)
-        assert restored_state['arch'] == arch
-
-        model.load_state_dict(restored_state['model'])
-
-        if 'optimizer' in restored_state:
-            optimizer.load_state_dict(restored_state['optimizer'])
-            for group in optimizer.param_groups:
-                group['lr'] = learning_rate
-
-        best_accuracy = restored_state['accuracy']
-        start_epoch = restored_state['epoch'] + 1
-        run_dir = os.path.split(restore)[0]
-    else:
-        best_accuracy = 0.0
-        start_epoch = 1
-        run_dir = f"./run/{arch}/{timestamp}"
-
-    print('Starting accuracy is {}'.format(best_accuracy))
-
-    if not os.path.exists(run_dir) and run_dir != '':
-        os.makedirs(run_dir)
-
-    print(model)
-    print("{} parameters".format(utils.count_parameters(model)))
-    print(f"Run directory set to {run_dir}")
-
-    # Save model text description
-    with open(os.path.join(run_dir, 'model.txt'), 'w') as file:
-        file.write(str(model))
-    return run_dir, start_epoch, best_accuracy, model, optimizer
-
-
-def create_test_dataset(dataset, dataset_dir, transform,
-                        target_transform=None):
-    if dataset == 'cifar10':
-        test_dataset = datasets.CIFAR10(root=dataset_dir, train=False,
-                                        download=True,
-                                        transform=transform,
-                                        target_transform=target_transform)
-    elif dataset == 'cifar100':
-        test_dataset = datasets.CIFAR100(root=dataset_dir, train=False,
-                                         download=True,
-                                         transform=transform,
-                                         target_transform=target_transform)
-    elif dataset == 'cifar20':
-        test_dataset = CoarseCIFAR100(root=dataset_dir, train=False,
-                                      download=True, transform=transform,
-                                      target_transform=target_transform)
-    elif dataset == 'svhn' or dataset == 'svhn+extra':
-        test_dataset = datasets.SVHN(root=dataset_dir, split='test',
-                                     download=True,
-                                     transform=transform,
-                                     target_transform=target_transform)
-    elif dataset == 'mnist':
-        test_dataset = datasets.MNIST(root=dataset_dir, train=False,
-                                      download=True,
-                                      transform=transform,
-                                      target_transform=target_transform)
-    return test_dataset
-
-
-def create_train_dataset(dataset, dataset_dir, transform,
-                         target_transform=None):
-    if dataset == 'cifar10':
-        train_dataset = datasets.CIFAR10(root=dataset_dir, train=True,
-                                         download=True,
-                                         transform=transform,
-                                         target_transform=target_transform)
-    elif dataset == 'cifar100':
-        train_dataset = datasets.CIFAR100(root=dataset_dir, train=True,
-                                          download=True,
-                                          transform=transform,
-                                          target_transform=target_transform)
-    elif dataset == 'cifar20':
-        train_dataset = CoarseCIFAR100(root=dataset_dir, train=True,
-                                       download=True, transform=transform,
-                                       target_transform=target_transform)
-    elif dataset == 'svhn':
-        train_dataset = datasets.SVHN(root=dataset_dir, split='train',
-                                      download=True,
-                                      transform=transform,
-                                      target_transform=target_transform)
-    elif dataset == 'svhn+extra':
-        _train_dataset = datasets.SVHN(root=dataset_dir, split='train',
-                                       download=True,
-                                       transform=transform,
-                                       target_transform=target_transform)
-        _extra_dataset = datasets.SVHN(root=dataset_dir, split='extra',
-                                       download=True,
-                                       transform=transform,
-                                       target_transform=target_transform)
-        train_dataset = torch.utils.data.ConcatDataset([
-            _train_dataset,
-            _extra_dataset
-        ])
-    elif dataset == 'mnist':
-        train_dataset = datasets.MNIST(root=dataset_dir, train=True,
-                                       download=True,
-                                       transform=transform,
-                                       target_transform=target_transform)
-
-    return train_dataset
-
+from resnet.cifar10.trainer import Trainer
 
 @click.group(invoke_without_command=True)
 @click.option('--dataset-dir', default='./data')
@@ -363,22 +58,18 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
           half, arch):
     timestamp = "{:.0f}".format(datetime.utcnow().timestamp())
     local_timestamp = str(datetime.now())  # noqa: F841
+
     dataset = ctx.obj['dataset'] if ctx.obj is not None else 'cifar10'
-    assert dataset in DATASETS, "Only CIFAR and SVHN supported"
+    assert dataset in data.DATASETS, "Only CIFAR and SVHN supported"
 
-    if dataset == 'svhn+extra':
-        dataset_dir = os.path.join(dataset_dir, 'svhn')
-    elif dataset == 'cifar20':
-        dataset_dir = os.path.join(dataset_dir, 'cifar100')
-    else:
-        dataset_dir = os.path.join(dataset_dir, dataset)
+    dataset = data.DATASETS[dataset]
+    dataset_dir = dataset.create_path(dataset_dir)
+    num_classes = dataset.num_classes
 
-    if dataset == 'cifar100':
-        num_classes = 100
-    elif dataset == 'cifar20':
-        num_classes = 20
-    else:
-        num_classes = 10
+    ### Use single-channel ResNet for MNIST, default is 3-channel ###
+    if dataset == 'mnist' and 'resnet' in arch:
+        arch += '-1'
+        
     config = {k: v for k, v in locals().items() if k != 'ctx'}
 
     if ctx.invoked_subcommand is not None:
@@ -388,59 +79,32 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
         return 0
 
     learning_rate = learning_rates[0]
-
     use_cuda = cuda and torch.cuda.is_available()
 
-    run_dir, start_epoch, best_accuracy, model, optimizer = create_graph(
-        arch, timestamp, optimizer, restore,
-        learning_rate=learning_rate, momentum=momentum,
-        weight_decay=weight_decay, num_classes=num_classes)
-
-    utils.save_config(config, run_dir)
-
-    if tracking:
-        train_results_file = os.path.join(run_dir, 'train_results.csv')
-        valid_results_file = os.path.join(run_dir, 'valid_results.csv')
-        test_results_file = os.path.join(run_dir, 'test_results.csv')
-    else:
-        train_results_file = None
-        valid_results_file = None
-        test_results_file = None
-
-    # create loss
-    criterion = nn.CrossEntropyLoss()
+    # if tracking:
+    #     train_results_file = os.path.join(run_dir, 'train_results.csv')
+    #     valid_results_file = os.path.join(run_dir, 'valid_results.csv')
+    #     test_results_file  = os.path.join(run_dir, 'test_results.csv')
+    # else:
+    #     train_results_file = None
+    #     valid_results_file = None
+    #     test_results_file  = None
 
     if use_cuda:
-        print('Copying model to GPU')
-        model = model.cuda()
-        criterion = criterion.cuda()
-
-        if half:
-            model = model.half()
-            criterion = criterion.half()
         device_ids = device_ids or list(range(torch.cuda.device_count()))
-        model = torch.nn.DataParallel(
-            model, device_ids=device_ids)
         num_workers = num_workers or len(device_ids)
     else:
         num_workers = num_workers or 1
-        if half:
-            print('Half precision (16-bit floating point) only works on GPU')
     print(f"using {num_workers} workers for data loading")
 
-    # create mask transform
-    data_shape = SHAPES[dataset]
-    mask_tr = subsample_transform.Subsample(2)
-    
     # load data
-    print("Preparing {} data:".format(dataset.upper()))
+    print("Preparing {} data:".format(dataset.name.upper()))
     transform_test = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(MEANS[dataset], STDS[dataset]),
-        mask_tr,
+        transforms.Normalize(dataset.mean, dataset.std)
     ])
 
-    test_dataset = create_test_dataset(dataset, dataset_dir, transform_test)
+    test_dataset = dataset.create_test_dataset(dataset_dir, transform_test)
 
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
@@ -463,11 +127,10 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
 
     transform_train = transforms.Compose(transform_train + [
         transforms.ToTensor(),
-        transforms.Normalize(MEANS[dataset], STDS[dataset]),
-        mask_tr,
+        transforms.Normalize(dataset.mean, dataset.std),
     ])
 
-    train_dataset = create_train_dataset(dataset, dataset_dir, transform_train)
+    train_dataset = dataset.create_train_dataset(dataset_dir, transform_train)
 
     num_train = len(train_dataset)
     indices = list(range(num_train))
@@ -497,70 +160,11 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
         print('Using test dataset for validation')
         valid_loader = test_loader
 
-    for nepochs, learning_rate in zip(epochs, learning_rates):
-        end_epoch = start_epoch + nepochs
-        for group in optimizer.param_groups:
-            group['lr'] = learning_rate
-        _lr_optimizer = utils.get_learning_rate(optimizer)
-        if _lr_optimizer is not None:
-            print('Learning rate set to {}'.format(_lr_optimizer))
-            assert _lr_optimizer == learning_rate
-
-        if schedule:
-            scheduler = ReduceLROnPlateau(
-                optimizer, 'max', factor=decay_factor,
-                verbose=True, patience=patience)
-        for epoch in range(start_epoch, end_epoch):
-            run(epoch, model, train_loader, criterion, optimizer,
-                use_cuda=use_cuda, tracking=train_results_file, train=True,
-                half=half)
-
-            valid_acc = run(epoch, model, valid_loader, use_cuda=use_cuda,
-                            tracking=valid_results_file, train=False,
-                            half=half)
-
-            if validation != 0 and track_test_acc:
-                run(epoch, model, test_loader, use_cuda=use_cuda,
-                    tracking=test_results_file, train=False)
-
-            if schedule:
-                prev_learning_rate = utils.get_learning_rate(optimizer)
-                scheduler.step(valid_acc)
-                new_learning_rate = utils.get_learning_rate(optimizer)
-
-                if new_learning_rate <= min_lr:
-                    return 0
-
-                if prev_learning_rate != new_learning_rate:
-                    timestamp = "{:.0f}".format(datetime.utcnow().timestamp())
-                    config['timestamp'] = timestamp
-                    config['learning_rate'] = new_learning_rate
-                    config['next_epoch'] = epoch + 1
-                    utils.save_config(config, run_dir)
-
-            is_best = valid_acc > best_accuracy
-            last_epoch = epoch == (end_epoch - 1)
-            if is_best or checkpoint == 'all' or (checkpoint == 'last' and last_epoch):  # noqa: E501
-                state = {
-                    'epoch': epoch,
-                    'arch': arch,
-                    'model': (model.module if use_cuda else model).state_dict(),  # noqa: E501
-                    'accuracy': valid_acc,
-                    'optimizer': optimizer.state_dict()
-                }
-            if is_best:
-                print('New best model!')
-                filename = os.path.join(run_dir, 'checkpoint_best_model.t7')
-                print(f'Saving checkpoint to {filename}')
-                best_accuracy = valid_acc
-                torch.save(state, filename)
-            if checkpoint == 'all' or (checkpoint == 'last' and last_epoch):
-                filename = os.path.join(run_dir, f'checkpoint_{epoch}.t7')
-                print(f'Saving checkpoint to {filename}')
-                torch.save(state, filename)
-
-        start_epoch = end_epoch
-
-
+    trainer = Trainer.create_new(arch, num_classes, optimizer,
+                                 list(zip(epochs, learning_rates)),
+                                 momentum=momentum, weight_decay=weight_decay,
+                                 use_cuda=use_cuda, basedir='./run')
+    trainer.train_loop(train_loader, valid_loader)
+    
 if __name__ == '__main__':
     train()

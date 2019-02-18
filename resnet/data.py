@@ -25,10 +25,10 @@ class Data:
         self.num_classes = num_classes
         self.num_channels = num_channels
 
-    def create_path(basedir):
+    def create_path(self, basedir):
         return os.path.join(basedir, self.name)
 
-    def create_train_dataset(basedir, transform, target_transform=None):
+    def create_train_dataset(self, basedir, transform, target_transform=None):
         if self.name == 'svhn':
             return self.dataset(root=dataset_dir, split='train',
                                           download=True,
@@ -54,7 +54,7 @@ class Data:
                                 target_transform=target_transform)
 
     
-    def create_test_dataset(basedir, transform, target_transform=None):
+    def create_test_dataset(self, basedir, transform, target_transform=None):
         if self.name == 'svhn' or self.name == 'svhn+extra':
             return self.dataset(root=basedir, split='test',
                                 download=True, transform=transform,
@@ -78,7 +78,7 @@ SVHN = Data('svhn',
 CIFAR10 = Data('cifar10',
                datasets.CIFAR10,
                (0.4914, 0.4822, 0.4465),
-               (0.24703223, 0.24348512, 0.26158784),,
+               (0.24703223, 0.24348512, 0.26158784),
                (3, 32, 32),
                10,
                3

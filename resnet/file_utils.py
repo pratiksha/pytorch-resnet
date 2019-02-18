@@ -4,6 +4,8 @@ Run/checkpoint directory management
 
 BEST_CHECKPOINT_NAME = "checkpoint_best_model.t7"
 
+from datetime import datetime
+
 import json
 import os
 

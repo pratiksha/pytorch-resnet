@@ -32,9 +32,9 @@ class OptimizerState(object):
 
         momentum = restored_state['momentum'] if 'momentum' in restored_state.keys() else None
         weight_decay = restored_state['weight_decay'] if 'weight_decay' in restored_state.keys() else None
+
         optimizer = OptimizerState.init_optimizer(model, restored_state['name'],
-                                                  restored_state['lr'],
-                                                  restored_state['weight_decay'])
+                                                  restored_state['lr'], momentum, weight_decay)
 
         return OptimizerState(restored_state['name'], optimizer, restored_state['lr'],
                               momentum, weight_decay)
@@ -57,6 +57,7 @@ class OptimizerState(object):
                       'lr': self.learning_rate,
                       'momentum': self.momentum,
                       'weight_decay': self.weight_decay}
+        return state_dict
 
 class TrainingState(object):
     @staticmethod
@@ -74,14 +75,14 @@ class TrainingState(object):
                              num_classes,
                              restored_state['epoch'] + 1,
                              arch,
-                             restored_state['accuracy'],
+                             restored_state['best_accuracy'],
                              restored_state['optimizer_name'],
                              optimizer_state)
     
     @staticmethod
     def from_checkpoint(ckpt_path):
         restored_state = torch.load(ckpt_path)
-        return from_restore(restored_state)
+        return TrainingState.from_restore(restored_state)
 
     @staticmethod
     def new_state(arch, num_classes, optimizer_name, lr, momentum=None, weight_decay=None):
@@ -94,7 +95,6 @@ class TrainingState(object):
         self.num_classes = num_classes
         self.epoch = epoch
         self.arch = arch
-        self.cur_valid_acc = None # We assume we're starting at this epoch, so we shouldn't associate the epoch with any acc until the epoch completes.
         self.best_acc = acc
         self.optimizer_name = optimizer_name
         self.optimizer_state = optimizer_state # this is an OptimizerState
@@ -108,7 +108,7 @@ class TrainingState(object):
             'num_classes': self.num_classes,
             'arch': self.arch,
             'epoch': self.epoch,
-            'accuracy': self.valid_acc,
+            'best_accuracy': self.best_acc,
             'optimizer_name': self.optimizer_name,
             'optimizer_state': optimizer_state,
         }
@@ -124,7 +124,9 @@ class TrainingState(object):
 class Trainer:
     @staticmethod
     def from_checkpoint(arch, num_classes, optimizer_name, restore_dir, lr_schedule, use_cuda=True):
-        restored_state = TrainingState.from_checkpoint(restore_dir.latest_checkpoint_path())
+        # TODO restore latest?
+        # restored_state = TrainingState.from_checkpoint(restore_dir.latest_checkpoint_path())
+        restored_state = TrainingState.from_checkpoint(restore_dir.best_checkpoint_path())
         trainer = Trainer(restored_state,
                           nn.CrossEntropyLoss(),
                           lr_schedule,
@@ -152,6 +154,7 @@ class Trainer:
                  decay_factor=0.1, patience=10, schedule=False):
         self.state = initial_state # contains model, epoch, current best acc, last validation acc, etc.
         self.state.use_cuda = use_cuda
+        self.checkpoint_dir = checkpoint_dir
 
         self.criterion = loss_criterion
         self.lr_schedule = lr_schedule
@@ -172,6 +175,7 @@ class Trainer:
         self.test_res_file = None
 
         # TODO this can/should also go in the training state
+        self.scheduler = None
         if schedule:
             self.scheduler = ReduceLROnPlateau(
                 self.optimizer, 'max', factor=decay_factor,
@@ -186,7 +190,7 @@ class Trainer:
         if best:
             ckpt_path = self.checkpoint_dir.best_checkpoint_path()
         else:
-            ckpt_path = self.checkpoint_dir.epoch_path(self.epoch)
+            ckpt_path = self.checkpoint_dir.epoch_path(self.state.epoch)
 
         torch.save(state, ckpt_path)
 
@@ -198,35 +202,34 @@ class Trainer:
         utils.save_config(config, run_dir)
 
     ## run model on inputs and evaluate against targets
-    def evaluate_model(self, inputs, targets, volatile=False):
-        inputs = Variable(inputs, requires_grad=False, volatile=volatile)
-        targets = Variable(targets, requires_grad=False, volatile=volatile)
+    def evaluate_model(self, inputs_, targets_, volatile=False):
+        inputs = Variable(inputs_, requires_grad=False, volatile=volatile)
+        targets = Variable(targets_, requires_grad=False, volatile=volatile)
 
         batch_size = targets.size(0)
         assert batch_size < 2**32, 'Size is too large! correct will overflow'
 
         if self.state.use_cuda:
             inputs = inputs.cuda()
-
+            targets = targets.cuda()
+            
         outputs = self.state.model(inputs)
         _, predictions = torch.max(outputs.data, 1)
-        targets = targets.view(-1, 1).expand_as(predictions)
-        
-        corrects = predictions.eq(targets).cpu().int().cumsum(1).sum(0)
-        top_correct = corrects.data[0]
-    
-        return (outputs, top_correct * (100./batch_size))
+        targets = targets.data.view_as(predictions)
+
+        correct = predictions.eq(targets).cpu().int().sum(0)[0]
+        return (outputs, correct * (100./batch_size))
         
     # since we are passing to optimizer, outputs and targets must both be Variables
     def gradient_update(self, outputs, targets):
-        loss = criterion(outputs, targets)
-        self.state.optimizer.zero_grad()
+        loss = self.criterion(outputs, targets)
+        self.state.optimizer().zero_grad()
         loss.backward()
-        self.state.optimizer.step()
+        self.state.optimizer().step()
 
         return loss
         
-    def run_train_iteration(self, loader, criterion):
+    def run_train_iteration(self, loader):
         loader = tqdm.tqdm(loader)
         losses = utils.AverageMeter()
         acc = utils.AverageMeter() # top-1 only for now
@@ -236,15 +239,20 @@ class Trainer:
         start = datetime.now()
         for batch_index, (inputs, targets) in enumerate(loader):
             outputs, top1_acc = self.evaluate_model(inputs, targets, volatile=False)
+            targets_var = Variable(targets, requires_grad=False, volatile=False)
+
+            if self.state.use_cuda:
+                targets_var = targets_var.cuda()
             
-            loss = self.gradient_update(outputs, targets)
+            batch_size = targets.size(0)
+            loss = self.gradient_update(outputs, targets_var)
             losses.update(loss.data[0], batch_size)
 
-            accuracies.update(top1_acc)
+            acc.update(top1_acc)
             
             end = datetime.now()
 
-            desc = 'Epoch {} {}'.format(epoch, '(Train):' if train else '(Val):  ')
+            desc = 'Epoch {} {}'.format(self.state.epoch, '(Train):')
             desc += ' Loss {loss.val:.4f} ({loss.avg:.4f})'.format(loss=losses)
             desc += ' Prec@{} {acc.val:.3f} ({acc.avg:.3f})'.format(1, acc=acc)
             loader.set_description(desc)
@@ -259,18 +267,19 @@ class Trainer:
 
     def run_eval_iteration(self, loader):
         loader = tqdm.tqdm(loader)
+        losses = utils.AverageMeter()
+        acc = utils.AverageMeter() # top-1 only for now
 
         self.state.model.eval()
 
         start = datetime.now()
         for batch_index, (inputs, targets) in enumerate(loader):
-            outputs, top1_acc = evaluate_model(inputs, targets, volatile=False)
-            accuracies.update(top1_acc)
+            outputs, top1_acc = self.evaluate_model(inputs, targets, volatile=False)
+            acc.update(top1_acc)
             
             end = datetime.now()
 
-            desc = 'Epoch {} {}'.format(epoch, '(Train):' if train else '(Val):  ')
-            desc += ' Loss {loss.val:.4f} ({loss.avg:.4f})'.format(loss=losses)
+            desc = 'Epoch {} {}'.format(self.state.epoch, '(Val):  ')
             desc += ' Prec@{} {acc.val:.3f} ({acc.avg:.3f})'.format(1, acc=acc)
             loader.set_description(desc)
 
@@ -287,13 +296,13 @@ class Trainer:
             end_epoch = self.state.epoch + nepochs
 
             while self.state.epoch < end_epoch:
-                train_acc = self.run_train_iteration(train_loader, self.criterion)
-                valid_acc = self.run_val_iteration(valid_loader, self.criterion)
+                train_acc = self.run_train_iteration(train_loader)
+                valid_acc = self.run_eval_iteration(valid_loader)
 
                 if self.scheduler is not None:
-                    prev_lr = utils.get_learning_rate(self.optimizer)
+                    prev_lr = utils.get_learning_rate(self.state.optimizer())
                     self.scheduler.step(valid_acc)
-                    new_lr = utils.get_learning_rate(self.optimizer)
+                    new_lr = utils.get_learning_rate(self.state.optimizer())
 
                     if new_learning_rate <= min_lr:
                         return 0
@@ -301,18 +310,17 @@ class Trainer:
                     if prev_learning_rate != new_learning_rate:
                         self.save_new_lr(epoch+1, new_learning_rate)
 
-                    is_best = valid_acc > self.state.best_acc
-                    checkpoint = is_best # TODO: or (self.checkpoint=='all') or ((self.checkpoint == 'last') and (self.epoch == end_epoch - 1))
+                is_best = valid_acc > self.state.best_acc
+                checkpoint = is_best # TODO: or (self.checkpoint=='all') or ((self.checkpoint == 'last') and (self.epoch == end_epoch - 1))
 
+                if is_best:
+                    self.state.best_acc = valid_acc
+
+                if checkpoint:
                     if is_best:
-                        self.state.best_acc = valid_acc
-                    self.state.cur_valid_acc = valid_acc
-                    
-                    if checkpoint:
-                        if is_best:
-                            print('New best model!')
-                            self.save_checkpoint(best=True)
-                        else:
-                            self.save_checkpoint(best=False)
+                        print('New best model!')
+                        self.save_checkpoint(best=True)
+                    else:
+                        self.save_checkpoint(best=False)
                             
                 self.state.epoch += 1

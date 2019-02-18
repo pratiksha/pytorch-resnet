@@ -46,14 +46,14 @@ class ArchDir(object):
         assert (not os.path.exists(dir_path))
         os.makedirs(dir_path)
 
-        return dir_path
+        return CheckpointDir(dir_path)
 
 class CheckpointDir(object):
     def __init__(self, run_path):
         self.run_path = run_path
 
     def latest_checkpoint_path(self):
-        pass
+        raise NotImplementedError
 
     def best_checkpoint_path(self):
         return os.path.join(self.run_path, BEST_CHECKPOINT_NAME)
@@ -72,9 +72,6 @@ class CheckpointDir(object):
     def epoch_path(self, epoch):
         return os.path.join(self.run_path, f'checkpoint_{epoch}.f7')
 
-    def save_checkpoint(self, model):
-        pass
-    
 class EnsembleDir(CheckpointDir):
     def init_subdirs(self):
         files = os.listdir(self.run_path)

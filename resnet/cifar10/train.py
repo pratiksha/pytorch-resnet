@@ -24,7 +24,7 @@ from resnet.cifar10.trainer import Trainer
 @click.option('--dataset-dir', default='./data')
 @click.option('--checkpoint', '-c', type=click.Choice(['best', 'all', 'last']),
               default='last')
-@click.option('--restore', '-r')
+@click.option('--restore', '-r', is_flag=True)
 @click.option('--tracking/--no-tracking', default=True)
 @click.option('--track-test-acc/--no-track-test-acc', default=True)
 @click.option('--cuda/--no-cuda', default=True)
@@ -160,10 +160,17 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
         print('Using test dataset for validation')
         valid_loader = test_loader
 
-    trainer = Trainer.create_new(arch, num_classes, optimizer,
-                                 list(zip(epochs, learning_rates)),
-                                 momentum=momentum, weight_decay=weight_decay,
-                                 use_cuda=use_cuda, basedir='./run')
+    if not restore:
+        trainer = Trainer.create_new(arch, num_classes, optimizer,
+                                     list(zip(epochs, learning_rates)),
+                                     momentum=momentum, weight_decay=weight_decay,
+                                     use_cuda=use_cuda, basedir='./run')
+    else:
+        trainer = Trainer.from_checkpoint(arch, num_classes, optimizer,
+                                          file_utils.load_latest_checkpoint('./run', arch),
+                                          list(zip(epochs, learning_rates)),
+                                          use_cuda=use_cuda)
+                                          
     trainer.train_loop(train_loader, valid_loader)
     
 if __name__ == '__main__':

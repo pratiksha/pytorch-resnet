@@ -7,45 +7,27 @@ from torch import nn
 from torch.autograd import Variable
 
 from resnet import utils
+
+from resnet.cifar10.tester import Tester
 from resnet.cifar10.trainer import TrainingState
 
-class Tester:
+from resnet.cifar10.attacks.attack_iterative import AttackIterative
+
+class Attacker(Tester):
     @staticmethod
     def from_checkpoint(arch, num_classes, restore_dir, use_cuda=True):
         restored_state = TrainingState.from_checkpoint(restore_dir.best_checkpoint_path())
-        tester = Tester(restored_state.model,
-                        nn.CrossEntropyLoss(),
-                        use_cuda)
-        return tester
-    
-    def __init__(self, model, loss_criterion, use_cuda):
-        self.criterion = loss_criterion
-        self.model = model
-        self.use_cuda = use_cuda
+        attacker = Attacker(restored_state.model,
+                            nn.CrossEntropyLoss(),
+                            use_cuda)
+        return attacker
 
-        if use_cuda:
-            self.model.cuda()
-            self.device_ids = list(range(torch.cuda.device_count()))
-            self.model = torch.nn.DataParallel(
-                self.model, device_ids=self.device_ids)
-            self.num_workers = len(self.device_ids)
-        else:
-            num_workers = num_workers or 1
+    def __init__(self, model, loss_criterion, use_cuda,
+                 attack_name='iterative'):
+        super().__init__(model, loss_criterion, use_cuda)
+        
+        self.attack = AttackIterative(norm=2, debug=False)
 
-    def evaluate_single_input(self, input_, target_):
-        v_input = Variable(input_, requires_grad=False)
-        v_target = Variable(target, requires_grad=False)
-
-        if self.use_cuda:
-            v_input = v_input.cuda()
-            v_target = v_target.cuda()
-
-        output = self.model(input)
-        correct = output.eq(target).cpu().int()[0]
-
-        return correct
-            
-    ## run model on inputs and evaluate against targets
     def evaluate_model(self, inputs_, targets_, volatile=False):
         inputs = Variable(inputs_, requires_grad=False, volatile=volatile)
         targets = Variable(targets_, requires_grad=False, volatile=volatile)
@@ -63,7 +45,7 @@ class Tester:
 
         correct = predictions.eq(targets).cpu().int().sum(0)[0]
         return (outputs, correct * (100./batch_size))
-
+        
     def run_eval(self, loader):
         loader = tqdm.tqdm(loader)
         losses = utils.AverageMeter()
@@ -73,17 +55,24 @@ class Tester:
 
         start = datetime.now()
         for batch_index, (inputs, targets) in enumerate(loader):
-            outputs, top1_acc = self.evaluate_model(inputs, targets, volatile=False)
+            if self.use_cuda:
+                inputs = inputs.cuda()
+                targets = targets.cuda()
+
+            inputs_adv = self.attack.run(self.model, inputs, targets, batch_index)
+
+            outputs, top1_acc = self.evaluate_model(inputs_adv, targets, volatile=False)
+            _, pred = torch.max(outputs.data, 1)
             acc.update(top1_acc)
             
             end = datetime.now()
 
-            desc = ' Prec@{} {acc.val:.3f} ({acc.avg:.3f})'.format(1, acc=acc)
+            desc = ' Prec@{} {acc.val:.3f} ({acc.avg:.3f}), output {pred[0]} target {targets}'.format(1, acc=acc, pred=pred, targets=targets[0])
             loader.set_description(desc)
 
             start = datetime.now()
 
-        message = 'Validation accuracy of'
+        message = 'Adversarial accuracy of'
         message += ' top-{}: {}'.format(1, acc.avg)
         print(message)
 

@@ -295,6 +295,13 @@ class Trainer:
         for (nepochs, learning_rate) in self.lr_schedule:  # lr_schedule is [(num_epochs, learning_rate)] list
             end_epoch = self.state.epoch + nepochs
 
+            for group in self.state.optimizer().param_groups:
+                group['lr'] = learning_rate
+                _lr_optimizer = utils.get_learning_rate(self.state.optimizer())
+                if _lr_optimizer is not None:
+                    print('Learning rate set to {}'.format(_lr_optimizer))
+                    assert _lr_optimizer == learning_rate
+                    
             while self.state.epoch < end_epoch:
                 train_acc = self.run_train_iteration(train_loader)
                 valid_acc = self.run_eval_iteration(valid_loader)

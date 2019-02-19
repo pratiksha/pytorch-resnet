@@ -81,15 +81,6 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
     learning_rate = learning_rates[0]
     use_cuda = cuda and torch.cuda.is_available()
 
-    # if tracking:
-    #     train_results_file = os.path.join(run_dir, 'train_results.csv')
-    #     valid_results_file = os.path.join(run_dir, 'valid_results.csv')
-    #     test_results_file  = os.path.join(run_dir, 'test_results.csv')
-    # else:
-    #     train_results_file = None
-    #     valid_results_file = None
-    #     test_results_file  = None
-
     if use_cuda:
         device_ids = device_ids or list(range(torch.cuda.device_count()))
         num_workers = num_workers or len(device_ids)

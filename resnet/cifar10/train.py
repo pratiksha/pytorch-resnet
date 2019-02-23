@@ -20,6 +20,8 @@ from resnet.cifar10.all_models import MODELS
 
 from resnet.cifar10.trainer import Trainer
 
+from resnet.cifar10.transforms import gaussian_transform, subsample_transform
+
 @click.group(invoke_without_command=True)
 @click.option('--dataset-dir', default='./data')
 @click.option('--checkpoint', '-c', type=click.Choice(['best', 'all', 'last']),
@@ -41,6 +43,8 @@ from resnet.cifar10.trainer import Trainer
 @click.option('--decay-factor', default=0.1)
 @click.option('--min-lr', default=1e-7)
 @click.option('--augmentation/--no-augmentation', default=True)
+@click.option('--gaussian', is_flag=True)
+@click.option('--sigma', default=0.5)
 @click.option('device_ids', '--device', '-d', multiple=True, type=int)
 @click.option('--num-workers', type=int)
 @click.option('--weight-decay', default=1e-4)
@@ -54,6 +58,7 @@ from resnet.cifar10.trainer import Trainer
 def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
           cuda, epochs, batch_size, learning_rates, momentum, optimizer,
           schedule, patience, decay_factor, min_lr, augmentation,
+          gaussian, sigma,
           device_ids, num_workers, weight_decay, validation, evaluate, shuffle,
           half, arch):
     timestamp = "{:.0f}".format(datetime.utcnow().timestamp())
@@ -116,10 +121,18 @@ def train(ctx, dataset_dir, checkpoint, restore, tracking, track_test_acc,
     else:
         transform_train = []
 
-    transform_train = transforms.Compose(transform_train + [
-        transforms.ToTensor(),
-        transforms.Normalize(dataset.mean, dataset.std),
-    ])
+    if gaussian:
+        transform_train = transforms.Compose(transform_train + [
+            transforms.ToTensor(),
+            gaussian_transform.GaussianPerturb(sigma=sigma),
+            subsample_transform.Subsample(2, 0),
+            transforms.Normalize(dataset.mean, dataset.std),
+        ])
+    else:
+        transform_train = transforms.Compose(transform_train + [
+            transforms.ToTensor(),
+            transforms.Normalize(dataset.mean, dataset.std),
+        ])
 
     train_dataset = dataset.create_train_dataset(dataset_dir, transform_train)
 

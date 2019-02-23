@@ -67,7 +67,7 @@ class Attacker(Tester):
             
             end = datetime.now()
 
-            desc = ' Prec@{} {acc.val:.3f} ({acc.avg:.3f}), output {pred[0]} target {targets}'.format(1, acc=acc, pred=pred, targets=targets[0])
+            desc = ' Prec@{} {acc.val:.3f} ({acc.avg:.3f}), output {pred} target {targets}'.format(1, acc=acc, pred=pred[0], targets=targets[0])
             loader.set_description(desc)
 
             start = datetime.now()

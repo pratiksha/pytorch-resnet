@@ -33,7 +33,7 @@ class ArchDir(object):
         return run_dir
 
     def by_checkpoint_id(self, checkpoint):
-        dir_path = os.join(self.arch_path, checkpoint)
+        dir_path = os.path.join(self.arch_path, checkpoint)
         return dir_path
 
     def new_checkpoint_dir(self, name=None):
@@ -94,6 +94,12 @@ def load_latest_checkpoint(basedir, arch, checkpoint_id='latest'):
     topdir = TopLevelDir(basedir)
     arch_dir = ArchDir(topdir.get_arch_path(arch))
     checkpoint_dir = CheckpointDir(arch_dir.most_recent_train())
+    return checkpoint_dir
+
+def load_checkpoint(basedir, arch, checkpoint_name):
+    topdir = TopLevelDir(basedir)
+    arch_dir = ArchDir(topdir.get_arch_path(arch))
+    checkpoint_dir = CheckpointDir(arch_dir.by_checkpoint_id(checkpoint_name))
     return checkpoint_dir
 
 def load_ensemble(basedir):
